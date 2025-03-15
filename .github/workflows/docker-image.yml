@@ -2,10 +2,15 @@ name: Build and Deploy to AWS ECR
 
 on:
   push:
-    branches: [ main ]
+    branches: [ jellybean ]
   pull_request:
-    branches: [ main ]
+    branches: [ jellybean ]
   workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version tag to deploy (e.g., 1.0, 2.0)'
+        required: true
+        default: 'latest'
 
 jobs:
   build-and-deploy:
@@ -26,6 +31,15 @@ jobs:
       id: login-ecr
       uses: aws-actions/amazon-ecr-login@v1
       
+    - name: Set version tag
+      id: version
+      run: |
+        if [[ "${{ github.event.inputs.version }}" != "" ]]; then
+          echo "VERSION=${{ github.event.inputs.version }}" >> $GITHUB_ENV
+        else
+          echo "VERSION=latest" >> $GITHUB_ENV
+        fi
+        
     - name: Create appsettings.json
       run: |
         cat > appsettings.json << EOF
@@ -47,9 +61,20 @@ jobs:
       env:
         ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
         ECR_REPOSITORY: ${{ secrets.ECR_REPOSITORY }}
-        IMAGE_TAG: ${{ github.sha }}
       run: |
-        docker build -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG .
-        docker tag $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG $ECR_REGISTRY/$ECR_REPOSITORY:latest
-        docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
-        docker push $ECR_REGISTRY/$ECR_REPOSITORY:latest
+        docker build -t $ECR_REGISTRY/$ECR_REPOSITORY:${{ env.VERSION }} .
+        docker push $ECR_REGISTRY/$ECR_REPOSITORY:${{ env.VERSION }}
+        
+        # Also update latest tag if we're on main branch
+        if [[ "${{ github.ref }}" == "refs/heads/main" ]]; then
+          docker tag $ECR_REGISTRY/$ECR_REPOSITORY:${{ env.VERSION }} $ECR_REGISTRY/$ECR_REPOSITORY:latest
+          docker push $ECR_REGISTRY/$ECR_REPOSITORY:latest
+        fi
+        
+    - name: Update SSM Parameter with image version
+      run: |
+        aws ssm put-parameter \
+          --name "/${{ secrets.PROJECT_NAME }}/app/image-version" \
+          --value "${{ env.VERSION }}" \
+          --type "String" \
+          --overwrite
