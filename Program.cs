@@ -19,9 +19,7 @@ builder.Services.AddCors(options =>
             builder
                 .WithOrigins(
                     "https://your-frontend-domain.com", 
-                    "https://www.your-company.com",
-                    "http://localhost:3000", // For local development
-                    "http://localhost:8080"  // For local development
+                    "http://localhost:3000" // For local development
                 )
                 .WithMethods("GET", "POST", "PUT", "DELETE")
                 .WithHeaders("Authorization", "Content-Type", "Accept")
