@@ -47,19 +47,20 @@ jobs:
     - name: Set Image Version
       id: set-version
       run: |
-        # Get current date and time in a format suitable for version
-        VERSION="5.0.$(date +'%Y%m%d%H%M')"
+        # Use a simple version number
+        VERSION="6.0"
         echo "VERSION=$VERSION" >> $GITHUB_ENV
         echo "::set-output name=version::$VERSION"
 
     - name: Build and push Docker image to ECR
       run: |
+        echo "Building Docker image with version tag: ${{ env.VERSION }}"
         docker build -t my-api .
-        docker tag my-api:latest 939737198590.dkr.ecr.ap-southeast-1.amazonaws.com/my-api:${{ env.VERSION }}
+        docker tag my-api 939737198590.dkr.ecr.ap-southeast-1.amazonaws.com/my-api:${{ env.VERSION }}
         docker push 939737198590.dkr.ecr.ap-southeast-1.amazonaws.com/my-api:${{ env.VERSION }}
-        # Also tag as latest
-        docker tag my-api:latest 939737198590.dkr.ecr.ap-southeast-1.amazonaws.com/my-api:latest
-        docker push 939737198590.dkr.ecr.ap-southeast-1.amazonaws.com/my-api:latest
+        
+        echo "Verifying image was pushed to ECR"
+        aws ecr describe-images --repository-name my-api --image-ids imageTag=${{ env.VERSION }} || echo "WARNING: Image verification failed"
 
     - name: Update SSM Parameter
       run: |
@@ -127,11 +128,13 @@ jobs:
     - name: Update User Data
       id: update-user-data
       run: |
-        # Update the user data file to reference the new image version
-        sed -i "s|docker pull \$ECR_REPO:[0-9\.]*|docker pull \$ECR_REPO:${{ env.VERSION }}|g" user_data.sh
-        sed -i "s|docker run -d -p 80:80 --name my-api \$ECR_REPO:[0-9\.]*|docker run -d -p 80:80 --name my-api \$ECR_REPO:${{ env.VERSION }}|g" user_data.sh
-        sed -i "s|docker pull \$ECR_REPO:[0-9\.]*|docker pull \$ECR_REPO:${{ env.VERSION }}|g" user_data.sh
-        sed -i "s|docker run -d -p 80:80 --name my-api \$ECR_REPO:[0-9\.]*|docker run -d -p 80:80 --name my-api \$ECR_REPO:${{ env.VERSION }}|g" user_data.sh
+        # Update image version in user data
+        sed -i "s|docker pull \$ECR_REPO:[0-9\\.]*|docker pull \$ECR_REPO:${{ env.VERSION }}|g" user_data.sh
+        sed -i "s|docker run -d -p 80:80.*\$ECR_REPO:[0-9\\.]*|docker run -d -p 80:80 --name my-api \$ECR_REPO:${{ env.VERSION }}|g" user_data.sh
+        
+        # Update health check script
+        sed -i "/HEALTHSCRIPT/,/HEALTHSCRIPT/ s|docker pull \$ECR_REPO:[0-9\\.]*|docker pull \$ECR_REPO:${{ env.VERSION }}|g" user_data.sh
+        sed -i "/HEALTHSCRIPT/,/HEALTHSCRIPT/ s|docker run -d -p 80:80.*\$ECR_REPO:[0-9\\.]*|docker run -d -p 80:80 --name my-api \$ECR_REPO:${{ env.VERSION }}|g" user_data.sh
         
         # Base64 encode the updated user data
         UPDATED_USER_DATA=$(base64 -w 0 user_data.sh)
