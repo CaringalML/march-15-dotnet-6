@@ -166,7 +166,7 @@ jobs:
           --auto-scaling-group-name $ASG_NAME \
           --launch-template "{\"LaunchTemplateId\":\"${{ env.LAUNCH_TEMPLATE_ID }}\",\"Version\":\"\$Latest\"}"
 
-    - name: Start Instance Refresh
+    - name: Force New Instance Refresh
       run: |
         # Get the ASG name if not already set
         if [ -z "$ASG_NAME" ]; then
@@ -176,7 +176,25 @@ jobs:
             --output text)
         fi
         
-        # Start an instance refresh to gradually replace instances with the new launch template
+        # Check if there's an instance refresh already in progress
+        INSTANCE_REFRESH_ID=$(aws autoscaling describe-instance-refreshes \
+          --auto-scaling-group-name $ASG_NAME \
+          --query "InstanceRefreshes[?Status=='InProgress'].InstanceRefreshId" \
+          --output text)
+        
+        # Cancel any existing instance refresh
+        if [ -n "$INSTANCE_REFRESH_ID" ]; then
+          echo "Canceling existing instance refresh with ID: $INSTANCE_REFRESH_ID"
+          aws autoscaling cancel-instance-refresh \
+            --auto-scaling-group-name $ASG_NAME
+          
+          # Wait for the cancellation to complete
+          echo "Waiting for instance refresh cancellation to complete..."
+          sleep 15
+        fi
+        
+        echo "Starting a new instance refresh..."
+        # Start a new instance refresh
         aws autoscaling start-instance-refresh \
           --auto-scaling-group-name $ASG_NAME \
           --preferences "{\"MinHealthyPercentage\":90,\"InstanceWarmup\":300}"
