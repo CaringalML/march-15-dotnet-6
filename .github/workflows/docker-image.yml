@@ -6,11 +6,6 @@ on:
   pull_request:
     branches: [ jellybean ]
   workflow_dispatch:
-    inputs:
-      version:
-        description: 'Version tag to deploy (e.g., 1.0, 2.0)'
-        required: true
-        default: '1.0'
 
 jobs:
   build-and-deploy:
@@ -31,33 +26,33 @@ jobs:
       id: login-ecr
       uses: aws-actions/amazon-ecr-login@v1
 
-    - name: Set version tag
-      id: version
-      run: echo "VERSION=${{ github.event.inputs.version || 'latest' }}" >> $GITHUB_ENV
 
     - name: Build, tag, and push image to Amazon ECR
       env:
         ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
         ECR_REPOSITORY: ${{ secrets.ECR_REPOSITORY }}
       run: |
-        echo "Building Docker image with tag: ${{ env.VERSION }}"
-        docker build -t $ECR_REGISTRY/$ECR_REPOSITORY:${{ env.VERSION }} .
-        docker push $ECR_REGISTRY/$ECR_REPOSITORY:${{ env.VERSION }}
+        IMAGE_VERSION="2.0"  # <-- Manually update this version when needed
+        echo "Building Docker image with tag: $IMAGE_VERSION"
+        docker build -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_VERSION .
+        docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_VERSION
 
     - name: Update SSM Parameter with image version
       run: |
-        echo "Updating SSM parameter with version: ${{ env.VERSION }}"
+        IMAGE_VERSION="2.0"  # <-- Ensure this matches the version above
+        echo "Updating SSM parameter with version: $IMAGE_VERSION"
         aws ssm put-parameter \
           --name "/${{ secrets.PROJECT_NAME }}/app/image-version" \
-          --value "${{ env.VERSION }}" \
+          --value "$IMAGE_VERSION" \
           --type "String" \
           --overwrite
 
     - name: Trigger EC2 to pull new image and restart container
       run: |
+        IMAGE_VERSION="2.0"  # <-- Ensure this matches the version above
         echo "Sending EC2 command to pull new image and restart container"
         aws ssm send-command \
           --document-name "AWS-RunShellScript" \
           --targets "[{\"Key\":\"tag:Name\",\"Values\":[\"${{ secrets.PROJECT_NAME }}-app-instance\"]}]" \
-          --parameters '{"commands":["docker pull ${{ steps.login-ecr.outputs.registry }}/${{ secrets.ECR_REPOSITORY }}:${{ env.VERSION }}","docker stop my-api || true","docker rm my-api || true","docker run -d -p 80:80 --name my-api ${{ steps.login-ecr.outputs.registry }}/${{ secrets.ECR_REPOSITORY }}:${{ env.VERSION }}"]}' \
+          --parameters '{"commands":["docker pull ${{ steps.login-ecr.outputs.registry }}/${{ secrets.ECR_REPOSITORY }}:'"$IMAGE_VERSION"'","docker stop my-api || true","docker rm my-api || true","docker run -d -p 80:80 --name my-api ${{ steps.login-ecr.outputs.registry }}/${{ secrets.ECR_REPOSITORY }}:'"$IMAGE_VERSION"'"]}' \
           --region ${{ secrets.AWS_REGION }}
