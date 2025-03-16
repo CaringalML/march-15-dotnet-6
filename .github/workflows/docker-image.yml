@@ -44,8 +44,119 @@ jobs:
         }
         EOF
 
+    - name: Set Image Version
+      id: set-version
+      run: |
+        # Get current date and time in a format suitable for version
+        VERSION="5.0.$(date +'%Y%m%d%H%M')"
+        echo "VERSION=$VERSION" >> $GITHUB_ENV
+        echo "::set-output name=version::$VERSION"
+
     - name: Build and push Docker image to ECR
       run: |
         docker build -t my-api .
-        docker tag my-api:latest 939737198590.dkr.ecr.ap-southeast-1.amazonaws.com/my-api:5.0
-        docker push 939737198590.dkr.ecr.ap-southeast-1.amazonaws.com/my-api:5.0
+        docker tag my-api:latest 939737198590.dkr.ecr.ap-southeast-1.amazonaws.com/my-api:${{ env.VERSION }}
+        docker push 939737198590.dkr.ecr.ap-southeast-1.amazonaws.com/my-api:${{ env.VERSION }}
+        # Also tag as latest
+        docker tag my-api:latest 939737198590.dkr.ecr.ap-southeast-1.amazonaws.com/my-api:latest
+        docker push 939737198590.dkr.ecr.ap-southeast-1.amazonaws.com/my-api:latest
+
+    - name: Update SSM Parameter
+      run: |
+        aws ssm put-parameter \
+          --name "/artisan-tiling/app/image-version" \
+          --value "${{ env.VERSION }}" \
+          --type "String" \
+          --overwrite
+
+    - name: Get Current Launch Template
+      id: get-launch-template
+      run: |
+        LAUNCH_TEMPLATE_ID=$(aws ec2 describe-launch-templates \
+          --filters "Name=tag:Name,Values=artisan-tiling-launch-template-*" \
+          --query "LaunchTemplates[0].LaunchTemplateId" \
+          --output text)
+        
+        if [ "$LAUNCH_TEMPLATE_ID" == "None" ] || [ -z "$LAUNCH_TEMPLATE_ID" ]; then
+          echo "No launch template found. Exiting."
+          exit 1
+        fi
+        
+        echo "LAUNCH_TEMPLATE_ID=$LAUNCH_TEMPLATE_ID" >> $GITHUB_ENV
+        echo "::set-output name=launch_template_id::$LAUNCH_TEMPLATE_ID"
+        
+        # Get the latest version of the launch template
+        LATEST_VERSION=$(aws ec2 describe-launch-template-versions \
+          --launch-template-id $LAUNCH_TEMPLATE_ID \
+          --query "LaunchTemplateVersions[0].VersionNumber" \
+          --output text)
+          
+        echo "LATEST_VERSION=$LATEST_VERSION" >> $GITHUB_ENV
+        echo "::set-output name=latest_version::$LATEST_VERSION"
+
+    - name: Get Current User Data
+      id: get-user-data
+      run: |
+        # Get the user data from the current launch template
+        USER_DATA=$(aws ec2 describe-launch-template-versions \
+          --launch-template-id ${{ env.LAUNCH_TEMPLATE_ID }} \
+          --versions ${{ env.LATEST_VERSION }} \
+          --query "LaunchTemplateVersions[0].LaunchTemplateData.UserData" \
+          --output text)
+        
+        # Save it to a file (it will be base64 encoded)
+        echo $USER_DATA | base64 --decode > user_data.sh
+
+    - name: Update User Data
+      id: update-user-data
+      run: |
+        # Update the user data file to reference the new image version
+        sed -i "s|docker pull \$ECR_REPO:[0-9\.]*|docker pull \$ECR_REPO:${{ env.VERSION }}|g" user_data.sh
+        sed -i "s|docker run -d -p 80:80 --name my-api \$ECR_REPO:[0-9\.]*|docker run -d -p 80:80 --name my-api \$ECR_REPO:${{ env.VERSION }}|g" user_data.sh
+        sed -i "s|docker pull \$ECR_REPO:[0-9\.]*|docker pull \$ECR_REPO:${{ env.VERSION }}|g" user_data.sh
+        sed -i "s|docker run -d -p 80:80 --name my-api \$ECR_REPO:[0-9\.]*|docker run -d -p 80:80 --name my-api \$ECR_REPO:${{ env.VERSION }}|g" user_data.sh
+        
+        # Base64 encode the updated user data
+        UPDATED_USER_DATA=$(base64 -w 0 user_data.sh)
+        echo "UPDATED_USER_DATA=$UPDATED_USER_DATA" >> $GITHUB_ENV
+
+    - name: Create New Launch Template Version
+      run: |
+        aws ec2 create-launch-template-version \
+          --launch-template-id ${{ env.LAUNCH_TEMPLATE_ID }} \
+          --version-description "Updated with image version ${{ env.VERSION }}" \
+          --source-version ${{ env.LATEST_VERSION }} \
+          --launch-template-data "{\"UserData\":\"${{ env.UPDATED_USER_DATA }}\"}"
+          
+    - name: Update Auto Scaling Group
+      run: |
+        # Get the ASG name
+        ASG_NAME=$(aws autoscaling describe-auto-scaling-groups \
+          --filters "Name=tag:Name,Values=artisan-tiling-app-asg" \
+          --query "AutoScalingGroups[0].AutoScalingGroupName" \
+          --output text)
+          
+        if [ "$ASG_NAME" == "None" ] || [ -z "$ASG_NAME" ]; then
+          echo "No Auto Scaling Group found. Exiting."
+          exit 1
+        fi
+        
+        # Update the ASG to use the newest launch template version
+        aws autoscaling update-auto-scaling-group \
+          --auto-scaling-group-name $ASG_NAME \
+          --launch-template "{\"LaunchTemplateId\":\"${{ env.LAUNCH_TEMPLATE_ID }}\",\"Version\":\"\$Latest\"}"
+
+    - name: Start Instance Refresh
+      run: |
+        # Get the ASG name if not already set
+        if [ -z "$ASG_NAME" ]; then
+          ASG_NAME=$(aws autoscaling describe-auto-scaling-groups \
+            --filters "Name=tag:Name,Values=artisan-tiling-app-asg" \
+            --query "AutoScalingGroups[0].AutoScalingGroupName" \
+            --output text)
+        fi
+        
+        # Start an instance refresh to gradually replace instances with the new launch template
+        aws autoscaling start-instance-refresh \
+          --auto-scaling-group-name $ASG_NAME \
+          --preferences "{\"MinHealthyPercentage\":90,\"InstanceWarmup\":300}"
