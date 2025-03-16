@@ -2,57 +2,54 @@ name: Build and Deploy to AWS ECR
 
 on:
   push:
-    branches: [ jellybean ]
+    branches: [ main ]
   pull_request:
-    branches: [ jellybean ]
+    branches: [ main ]
   workflow_dispatch:
 
 jobs:
   build-and-deploy:
     runs-on: ubuntu-latest
-
+    
     steps:
     - name: Checkout code
       uses: actions/checkout@v3
-
+      
     - name: Configure AWS credentials
       uses: aws-actions/configure-aws-credentials@v2
       with:
         aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
         aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
         aws-region: ${{ secrets.AWS_REGION }}
-
+      
     - name: Login to Amazon ECR
       id: login-ecr
       uses: aws-actions/amazon-ecr-login@v1
-
-
-    - name: Build, tag, and push image to Amazon ECR
+      
+    - name: Create appsettings.json
+      run: |
+        cat > appsettings.json << EOF
+        {
+          "ConnectionStrings": {
+            "DefaultConnection": "Server=${{ secrets.DB_SERVER }};Database=${{ secrets.DB_NAME }};User=${{ secrets.DB_USER }};Password=${{ secrets.DB_PASSWORD }};"
+          },
+          "Logging": {
+            "LogLevel": {
+              "Default": "Information",
+              "Microsoft.AspNetCore": "Warning"
+            }
+          },
+          "AllowedHosts": "*"
+        }
+        EOF
+        
+    - name: Build, tag, and push image to AWS ECR
       env:
         ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
         ECR_REPOSITORY: ${{ secrets.ECR_REPOSITORY }}
+        IMAGE_TAG: ${{ github.sha }}
       run: |
-        IMAGE_VERSION="3.0"  # <-- Manually update this version when needed
-        echo "Building Docker image with tag: $IMAGE_VERSION"
-        docker build -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_VERSION .
-        docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_VERSION
-
-    - name: Update SSM Parameter with image version
-      run: |
-        IMAGE_VERSION="3.0"  # <-- Ensure this matches the version above
-        echo "Updating SSM parameter with version: $IMAGE_VERSION"
-        aws ssm put-parameter \
-          --name "/${{ secrets.PROJECT_NAME }}/app/image-version" \
-          --value "$IMAGE_VERSION" \
-          --type "String" \
-          --overwrite
-
-    - name: Trigger EC2 to pull new image and restart container
-      run: |
-        IMAGE_VERSION="3.0"  # <-- Ensure this matches the version above
-        echo "Sending EC2 command to pull new image and restart container"
-        aws ssm send-command \
-          --document-name "AWS-RunShellScript" \
-          --targets "[{\"Key\":\"tag:Name\",\"Values\":[\"${{ secrets.PROJECT_NAME }}-app-instance\"]}]" \
-          --parameters '{"commands":["docker pull ${{ steps.login-ecr.outputs.registry }}/${{ secrets.ECR_REPOSITORY }}:'"$IMAGE_VERSION"'","docker stop my-api || true","docker rm my-api || true","docker run -d -p 80:80 --name my-api ${{ steps.login-ecr.outputs.registry }}/${{ secrets.ECR_REPOSITORY }}:'"$IMAGE_VERSION"'"]}' \
-          --region ${{ secrets.AWS_REGION }}
+        docker build -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG .
+        docker tag $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG $ECR_REGISTRY/$ECR_REPOSITORY:4.0
+        docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
+        docker push $ECR_REGISTRY/$ECR_REPOSITORY:4.0
