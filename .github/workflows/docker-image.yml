@@ -32,14 +32,14 @@ jobs:
         ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
         ECR_REPOSITORY: ${{ secrets.ECR_REPOSITORY }}
       run: |
-        IMAGE_VERSION="2.0"  # <-- Manually update this version when needed
+        IMAGE_VERSION="3.0"  # <-- Manually update this version when needed
         echo "Building Docker image with tag: $IMAGE_VERSION"
         docker build -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_VERSION .
         docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_VERSION
 
     - name: Update SSM Parameter with image version
       run: |
-        IMAGE_VERSION="2.0"  # <-- Ensure this matches the version above
+        IMAGE_VERSION="3.0"  # <-- Ensure this matches the version above
         echo "Updating SSM parameter with version: $IMAGE_VERSION"
         aws ssm put-parameter \
           --name "/${{ secrets.PROJECT_NAME }}/app/image-version" \
@@ -49,7 +49,7 @@ jobs:
 
     - name: Trigger EC2 to pull new image and restart container
       run: |
-        IMAGE_VERSION="2.0"  # <-- Ensure this matches the version above
+        IMAGE_VERSION="3.0"  # <-- Ensure this matches the version above
         echo "Sending EC2 command to pull new image and restart container"
         aws ssm send-command \
           --document-name "AWS-RunShellScript" \
