@@ -20,12 +20,13 @@ jobs:
       with:
         aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
         aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-        aws-region: ${{ secrets.AWS_REGION }}
+        aws-region: ap-southeast-1  # Singapore Region
       
     - name: Login to Amazon ECR
       id: login-ecr
-      uses: aws-actions/amazon-ecr-login@v1
-      
+      run: |
+        aws ecr get-login-password --region ap-southeast-1 | docker login --username AWS --password-stdin 939737198590.dkr.ecr.ap-southeast-1.amazonaws.com
+
     - name: Create appsettings.json
       run: |
         cat > appsettings.json << EOF
@@ -42,14 +43,9 @@ jobs:
           "AllowedHosts": "*"
         }
         EOF
-        
-    - name: Build, tag, and push image to AWS ECR
-      env:
-        ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
-        ECR_REPOSITORY: ${{ secrets.ECR_REPOSITORY }}
-        IMAGE_TAG: ${{ github.sha }}
+
+    - name: Build and push Docker image to ECR
       run: |
-        docker build -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG .
-        docker tag $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG $ECR_REGISTRY/$ECR_REPOSITORY:4.0
-        docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
-        docker push $ECR_REGISTRY/$ECR_REPOSITORY:4.0
+        docker build -t my-api .
+        docker tag my-api:latest 939737198590.dkr.ecr.ap-southeast-1.amazonaws.com/my-api:5.0
+        docker push 939737198590.dkr.ecr.ap-southeast-1.amazonaws.com/my-api:5.0
