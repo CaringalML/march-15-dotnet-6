@@ -10,53 +10,31 @@ on:
       version:
         description: 'Version tag to deploy (e.g., 1.0, 2.0)'
         required: true
-        default: 'latest'
+        default: '1.0'
 
 jobs:
   build-and-deploy:
     runs-on: ubuntu-latest
-    
+
     steps:
     - name: Checkout code
       uses: actions/checkout@v3
-      
+
     - name: Configure AWS credentials
       uses: aws-actions/configure-aws-credentials@v2
       with:
         aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
         aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
         aws-region: ${{ secrets.AWS_REGION }}
-      
+
     - name: Login to Amazon ECR
       id: login-ecr
       uses: aws-actions/amazon-ecr-login@v1
-      
+
     - name: Set version tag
       id: version
-      run: |
-        if [[ "${{ github.event.inputs.version }}" != "" ]]; then
-          echo "VERSION=${{ github.event.inputs.version }}" >> $GITHUB_ENV
-        else
-          echo "VERSION=latest" >> $GITHUB_ENV
-        fi
-        
-    - name: Create appsettings.json
-      run: |
-        cat > appsettings.json << EOF
-        {
-          "ConnectionStrings": {
-            "DefaultConnection": "Server=${{ secrets.DB_SERVER }};Database=${{ secrets.DB_NAME }};User=${{ secrets.DB_USER }};Password=${{ secrets.DB_PASSWORD }};"
-          },
-          "Logging": {
-            "LogLevel": {
-              "Default": "Information",
-              "Microsoft.AspNetCore": "Warning"
-            }
-          },
-          "AllowedHosts": "*"
-        }
-        EOF
-        
+      run: echo "VERSION=${{ github.event.inputs.version || 'latest' }}" >> $GITHUB_ENV
+
     - name: Build, tag, and push image to Amazon ECR
       env:
         ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
@@ -64,13 +42,7 @@ jobs:
       run: |
         docker build -t $ECR_REGISTRY/$ECR_REPOSITORY:${{ env.VERSION }} .
         docker push $ECR_REGISTRY/$ECR_REPOSITORY:${{ env.VERSION }}
-        
-        # Also update latest tag if we're on main branch
-        if [[ "${{ github.ref }}" == "refs/heads/main" ]]; then
-          docker tag $ECR_REGISTRY/$ECR_REPOSITORY:${{ env.VERSION }} $ECR_REGISTRY/$ECR_REPOSITORY:latest
-          docker push $ECR_REGISTRY/$ECR_REPOSITORY:latest
-        fi
-        
+
     - name: Update SSM Parameter with image version
       run: |
         aws ssm put-parameter \
@@ -78,3 +50,11 @@ jobs:
           --value "${{ env.VERSION }}" \
           --type "String" \
           --overwrite
+
+    - name: Trigger EC2 to pull new image and restart container
+      run: |
+        aws ssm send-command \
+          --document-name "AWS-RunShellScript" \
+          --targets "[{\"Key\":\"tag:Name\",\"Values\":[\"${{ secrets.PROJECT_NAME }}-app-instance\"]}]" \
+          --parameters '{"commands":["docker pull ${{ steps.login-ecr.outputs.registry }}/${{ secrets.ECR_REPOSITORY }}:${{ env.VERSION }}","docker stop my-api || true","docker rm my-api || true","docker run -d -p 80:80 --name my-api ${{ steps.login-ecr.outputs.registry }}/${{ secrets.ECR_REPOSITORY }}:${{ env.VERSION }}"]}' \
+          --region ${{ secrets.AWS_REGION }}
