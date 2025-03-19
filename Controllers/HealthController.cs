@@ -11,7 +11,7 @@ namespace ProductApi.Controllers
         {
             var response = new
             {
-                status = "I'm healthy!"
+                status = "I'm healthy! hurayyy"
             };
             
             return Ok(response);
